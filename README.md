@@ -129,9 +129,14 @@ python -u scraper_playwright.py
 
 ## API Reference
 
+### Base URL
+
+* **Local**: `http://localhost:8000`
+* **Codespaces (Public Port 8000)**: the forwarded URL shown in the **PORTS** panel
+
 ### `GET /fines`
 
-Returns fines with filters.
+Returns fines with optional filters.
 
 **Query Parameters**
 
@@ -141,14 +146,39 @@ Returns fines with filters.
 | `controller`                | Substring match on controller name |
 | `article`                   | Filter by cited GDPR article       |
 | `type`                      | Filter by category                 |
-| `min_amount` / `max_amount` | Filter numeric range               |
-| `from` / `to`               | Decision date range                |
+| `min_amount` / `max_amount` | Filter numeric range (EUR)         |
+| `from` / `to`               | Decision date range (YYYY-MM-DD)   |
 | `limit` / `offset`          | Pagination                         |
 
-**Example:**
+**Examples**
 
 ```bash
-curl "http://localhost:8000/fines?country=FRANCE&min_amount=1000000"
+# Top fines in Spain since 2023 (curl)
+curl "http://localhost:8000/fines?country=SPAIN&from=2023-01-01&min_amount=1000000&limit=50"
+
+# Articles matching Art. 5(1)(f) (curl)
+curl "http://localhost:8000/fines?article=5(1)(f)"
+```
+
+**Python**
+
+```python
+import requests
+r = requests.get("http://localhost:8000/fines", params={
+    "country": "FRANCE",
+    "min_amount": 1_000_000,
+    "from": "2023-01-01"
+})
+print(r.json()[:3])
+```
+
+**JavaScript (browser / Node)**
+
+```js
+const base = "http://localhost:8000"; // or your public URL
+const res = await fetch(`${base}/fines?country=ITALY&limit=5`);
+const data = await res.json();
+console.log(data);
 ```
 
 ### `GET /fines/{etid}`
@@ -167,27 +197,112 @@ Line-delimited JSON export for GPT ingestion.
 
 ## Updating the Custom GPT Dataset
 
-1. Run a **full scrape** and start the API.
-2. Visit `/fines.jsonl` (Codespace port 8000 → Public → Browser).
-3. Save the file locally.
-4. In **ChatGPT → Custom GPT → Configure → Knowledge**, upload the file.
-5. Example queries:
-
-   * “Top 10 fines since 2023 with ETID, controller, amount, date, country.”
-   * “List France fines citing Art. 5(1)(f) GDPR.”
-
----
-
 ## Operational Runbook
 
-| Task            | Command                                          |
-| --------------- | ------------------------------------------------ |
-| Refresh dataset | `python -u scraper_playwright.py`                |
-| Export dataset  | Download `/fines.jsonl`                          |
-| Start API       | `uvicorn api:app --host 0.0.0.0 --port 8000`     |
-| Verify rows     | `sqlite3 fines.db 'select count(*) from fines;'` |
+### Manual refresh (local or Codespaces)
 
-**Recommended cadence:** Refresh monthly or when new fines appear.
+1. Activate venv: `source .venv/bin/activate`
+2. Full scrape: `python -u scraper_playwright.py` (ensure the last line is `run()`)
+3. Start API: `uvicorn api:app --host 0.0.0.0 --port 8000`
+4. Download `/fines.jsonl` and upload to your Custom GPT.
+
+### Suggested cadence
+
+* Weekly or monthly, depending on how often the tracker updates.
+
+### Host / deploy options
+
+* **Codespaces (simple):** keep port 8000 Public while testing.
+* **Local machine:** run the same commands; share via a tunnel (e.g., Cloudflare Tunnel or `ssh -R`).
+* **Docker:** build and run the API anywhere that supports containers.
+
+**Dockerfile**
+
+```dockerfile
+FROM python:3.12-slim
+WORKDIR /app
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt \
+    && playwright install --with-deps chromium
+COPY . .
+ENV PYTHONUNBUFFERED=1
+EXPOSE 8000
+CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+Build & run:
+
+```bash
+docker build -t gdpr-et-api .
+docker run --rm -p 8000:8000 gdpr-et-api
+```
+
+> To refresh data inside the container, either mount a volume with `fines.db` or run the scraper in the container: `docker run --rm gdpr-et-api python -u scraper_playwright.py`.
+
+### Automation (GitHub Actions)
+
+Create `.github/workflows/scrape.yml` to refresh on a schedule and attach the dataset as an artifact or commit it to `data/`.
+
+```yaml
+name: Refresh fines dataset
+on:
+  schedule: [{ cron: '0 5 * * 1' }]  # every Monday 05:00 UTC
+  workflow_dispatch: {}
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+      - name: Run scraper (full)
+        env:
+          PYTHONUNBUFFERED: '1'
+        run: |
+          python - << 'PY'
+          from scraper_playwright import run
+          run()  # full scrape
+          PY
+      - name: Export JSONL
+        run: |
+          python - << 'PY'
+          import json, sqlite3
+          con = sqlite3.connect('fines.db')
+          cur = con.execute('SELECT etid,country,authority,decision_date,amount_eur,controller_or_processor,quoted_articles,type,summary,source_url,direct_url,scraped_at FROM fines')
+          with open('fines.jsonl','w',encoding='utf-8') as f:
+            for row in cur:
+              obj = {
+                'etid': row[0], 'country': row[1], 'authority': row[2], 'decision_date': row[3],
+                'amount_eur': row[4], 'controller_or_processor': row[5], 'quoted_articles': row[6],
+                'type': row[7], 'summary': row[8], 'source_url': row[9], 'direct_url': row[10], 'scraped_at': row[11]
+              }
+              f.write(json.dumps(obj, ensure_ascii=False) + '
+')
+          PY
+      - name: Upload artifact (fines.jsonl)
+        uses: actions/upload-artifact@v4
+        with:
+          name: fines-jsonl
+          path: fines.jsonl
+      # Optional: commit dataset into repo (data/)
+      - name: Commit updated dataset
+        if: ${{ github.ref == 'refs/heads/main' }}
+        run: |
+          mkdir -p data
+          mv fines.jsonl data/fines.jsonl
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add data/fines.jsonl fines.db || true
+          git commit -m "chore: refresh dataset" || echo "No changes to commit"
+          git push || true
+```
 
 ---
 
