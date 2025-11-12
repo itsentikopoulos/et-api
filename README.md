@@ -246,7 +246,7 @@ Create `.github/workflows/scrape.yml` to refresh on a schedule and attach the da
 ```yaml
 name: Refresh fines dataset
 on:
-  schedule: [{ cron: '0 5 * * 1' }]  # every Monday 05:00 UTC
+  schedule: [{ cron: '0 5 1,15 * *' }]  # 1st and 15th at 05:00 UTC (~every two weeks)
   workflow_dispatch: {}
 
 jobs:
@@ -265,34 +265,33 @@ jobs:
       - name: Run scraper (full)
         env:
           PYTHONUNBUFFERED: '1'
-        run: |
-          python - << 'PY'
-          from scraper_playwright import run
-          run()  # full scrape
-          PY
+        run: python -u scraper_playwright.py  # full scrape
       - name: Export JSONL
         run: |
-          python - << 'PY'
+          python - <<'PY'
           import json, sqlite3
           con = sqlite3.connect('fines.db')
-          cur = con.execute('SELECT etid,country,authority,decision_date,amount_eur,controller_or_processor,quoted_articles,type,summary,source_url,direct_url,scraped_at FROM fines')
+          con.row_factory = sqlite3.Row
+          rows = con.execute(
+            "SELECT etid,country,authority,decision_date,amount_eur,"
+            "controller_or_processor,quoted_articles,type,summary,"
+            "source_url,direct_url,scraped_at "
+            "FROM fines ORDER BY decision_date DESC"
+          ).fetchall()
           with open('fines.jsonl','w',encoding='utf-8') as f:
-            for row in cur:
-              obj = {
-                'etid': row[0], 'country': row[1], 'authority': row[2], 'decision_date': row[3],
-                'amount_eur': row[4], 'controller_or_processor': row[5], 'quoted_articles': row[6],
-                'type': row[7], 'summary': row[8], 'source_url': row[9], 'direct_url': row[10], 'scraped_at': row[11]
-              }
-              f.write(json.dumps(obj, ensure_ascii=False) + '
-')
+            for row in rows:
+              f.write(json.dumps(dict(row), ensure_ascii=False) + '\n')
+          con.close()
           PY
-      - name: Upload artifact (fines.jsonl)
+      - name: Upload artifact (dataset)
         uses: actions/upload-artifact@v4
         with:
-          name: fines-jsonl
-          path: fines.jsonl
+          name: fines-dataset
+          path: |
+            fines.db
+            fines.jsonl
       # Optional: commit dataset into repo (data/)
-      - name: Commit updated dataset
+      - name: Commit updated dataset (optional)
         if: ${{ github.ref == 'refs/heads/main' }}
         run: |
           mkdir -p data

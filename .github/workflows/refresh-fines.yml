@@ -1,0 +1,55 @@
+name: Refresh fines dataset
+
+on:
+  schedule:
+    - cron: "0 5 1,15 * *"  # every 1st and 15th at 05:00 UTC (~every two weeks)
+  workflow_dispatch:
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Run scraper (full)
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: python -u scraper_playwright.py
+
+      - name: Export fines.jsonl
+        run: |
+          python - <<'PY'
+          import json, sqlite3
+
+          con = sqlite3.connect("fines.db")
+          con.row_factory = sqlite3.Row
+          rows = con.execute(
+              "SELECT etid,country,authority,decision_date,amount_eur,"
+              "controller_or_processor,quoted_articles,type,summary,"
+              "source_url,direct_url,scraped_at "
+              "FROM fines ORDER BY decision_date DESC"
+          ).fetchall()
+          with open("fines.jsonl", "w", encoding="utf-8") as f:
+              for r in rows:
+                  f.write(json.dumps(dict(r), ensure_ascii=False) + "\n")
+          con.close()
+          PY
+
+      - name: Upload dataset artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: fines-dataset
+          path: |
+            fines.db
+            fines.jsonl
