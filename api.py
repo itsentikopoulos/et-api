@@ -38,7 +38,7 @@ def list_fines(
     min_amount: Optional[float] = None,
     max_amount: Optional[float] = None,
     controller: Optional[str] = Query(None, description="Substring match in controller_or_processor"),
-    typ: Optional[str] = Query(None, description="Type column"),
+    type_: Optional[str] = Query(None, alias="type", description="Type column"),
     date_from: Optional[str] = Query(None, description="YYYY-MM-DD"),
     date_to: Optional[str] = Query(None, description="YYYY-MM-DD"),
     limit: int = 100,
@@ -59,9 +59,9 @@ def list_fines(
     if controller:
         sql += " AND controller_or_processor LIKE ?"
         params.append(f"%{controller}%")
-    if typ:
+    if type_:
         sql += " AND type = ?"
-        params.append(typ)
+        params.append(type_)
     if min_amount is not None:
         sql += " AND amount_eur >= ?"
         params.append(min_amount)
