@@ -274,10 +274,12 @@ def run(max_pages: Optional[int] = None) -> None:
                 rows = page.locator(sel)
                 count = rows.count()
                 child = None
+                step = 1
                 if idx + 1 < count:
                     maybe = rows.nth(idx + 1)
                     if "child" in ((maybe.get_attribute("class") or "").lower()):
                         child = maybe
+                        step = 2
 
                 kv  = extract_child_kv(child)
                 det = extract_child_freeform(child)
@@ -334,7 +336,7 @@ def run(max_pages: Optional[int] = None) -> None:
                         "direct_url": direct_url,
                     })
 
-                idx += 2  # main + child
+                idx += step
 
             print(f"Page {page_index}: {len(batch)} fines (expanded)", flush=True)
             if batch:
